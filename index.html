@@ -33,6 +33,14 @@ outline: none;
 border-color: #3b82f6;
 box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.5);
 }
+.meal-tab {
+transition: background-color 0.15s, color 0.15s, border-bottom 0.15s;
+}
+.meal-tab.active {
+border-bottom: 4px solid #4f46e5;
+color: #4f46e5;
+font-weight: 700;
+}
 </style>
 </head>
 <body class="min-h-screen flex items-center justify-center p-4">
@@ -68,9 +76,21 @@ box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.5);
 </div>
 </div>
 
+<div class="mb-6 border-b border-gray-200">
+    <nav class="flex overflow-x-auto whitespace-nowrap text-sm font-medium text-gray-500">
+        <button id="tab-breakfast" data-meal="breakfast" class="meal-tab active px-4 py-2 hover:text-indigo-600 border-b-4 border-transparent">Breakfast</button>
+        <button id="tab-morning_snack" data-meal="morning_snack" class="meal-tab px-4 py-2 hover:text-indigo-600 border-b-4 border-transparent">M. Snack</button>
+        <button id="tab-lunch" data-meal="lunch" class="meal-tab px-4 py-2 hover:text-indigo-600 border-b-4 border-transparent">Lunch</button>
+        <button id="tab-evening_snack" data-meal="evening_snack" class="meal-tab px-4 py-2 hover:text-indigo-600 border-b-4 border-transparent">E. Snack</button>
+        <button id="tab-dinner" data-meal="dinner" class="meal-tab px-4 py-2 hover:text-indigo-600 border-b-4 border-transparent">Dinner</button>
+        <button id="tab-other" data-meal="other" class="meal-tab px-4 py-2 hover:text-indigo-600 border-b-4 border-transparent">Other</button>
+    </nav>
+</div>
+
 <div class="mb-6">
 <h2 class="text-xl font-bold text-gray-800 mb-4">Quick Add (Grams)</h2>
-<div id="carb-buttons-container" class="grid grid-cols-5 gap-3">
+<div id="carb-buttons-container" class="grid grid-cols-6 gap-3">
+<button id="minus-button" class="carb-button bg-red-500 hover:bg-red-600 text-white font-extrabold py-4 rounded-xl shadow-md transition duration-150 ease-in-out text-lg" onclick="updateCarbs(-5)">-5g</button>
 </div>
 </div>
 
@@ -102,7 +122,7 @@ import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-
 setLogLevel('Debug');
 
 // ====================================================================================
-// === FIREBASE CONFIGURATION (REPLACED WITH USER-PROVIDED VALUES) ===
+// === FIREBASE CONFIGURATION ===
 // ====================================================================================
 
 const firebaseConfig = {
@@ -115,11 +135,10 @@ const firebaseConfig = {
     measurementId: "G-23WSR8PR9H"
 };
 
-// Initialize Firebase App globally once
+// ====================================================================================
+// === GLOBAL INITIALIZATION ===
 const app = initializeApp(firebaseConfig);
 const analytics = getAnalytics(app); 
-
-// ====================================================================================
 
 // --- Global Firebase & App Variables ---
 let db;
@@ -128,6 +147,10 @@ let userId = 'loading';
 let unsubscribeSnapshot = null;
 let dailyTarget = 150;
 let selectedDate = new Date().toISOString().slice(0, 10); // Default to today (YYYY-MM-DD)
+let selectedMeal = 'breakfast'; // NEW: Default to Breakfast
+let currentDayCarbs = {}; // NEW: Holds the meal breakdown {breakfast: 10, lunch: 20, ...}
+
+const MEAL_CATEGORIES = ['breakfast', 'morning_snack', 'lunch', 'evening_snack', 'dinner', 'other'];
 
 // --- DOM Elements ---
 const totalCarbsEl = document.getElementById('total-carbs');
@@ -142,6 +165,7 @@ const resetButton = document.getElementById('reset-button');
 const statusMessage = document.getElementById('status-message');
 const messageText = document.getElementById('message-text');
 const closeMessageButton = document.getElementById('close-message');
+const mealTabsContainer = document.querySelector('nav'); // Container for tabs
 
 // --- Utility Functions ---
 
@@ -182,13 +206,14 @@ return doc(dbInstance, `/artifacts/${firebaseConfig.projectId}/users/${uid}/sett
 async function initializeAppAndAuth() {
 try {
 showMessage("Initializing application...");
-    
-// CORRECTION: Use the globally initialized 'app' instance to get services
 db = getFirestore(app);
 auth = getAuth(app); 
 
+// Set default date selector value to today
+dateSelectorEl.value = selectedDate;
+carbTargetInputEl.value = dailyTarget; // Initial value on load
+
 // *** START EXTERNAL HOSTING AUTHENTICATION LOGIC ***
-// We always use Anonymous Sign-In when running on external hosts.
 await signInAnonymously(auth);
 // *** END EXTERNAL HOSTING AUTHENTICATION LOGIC ***
 
@@ -214,14 +239,14 @@ showMessage(`Initialization failed. Error: ${error.message}`, true);
 }
 
 /** Function to calculate and update progress bar UI */
-function updateProgressDisplay(currentCarbs) {
+function updateProgressDisplay(currentTotalCarbs) { // Renamed parameter for clarity
 targetDisplayEl.textContent = dailyTarget;
 
 let percentage = 0;
 let colorClass = 'bg-emerald-400';
 
 if (dailyTarget > 0) {
-percentage = Math.min(100, (currentCarbs / dailyTarget) * 100);
+percentage = Math.min(100, (currentTotalCarbs / dailyTarget) * 100);
 }
 
 // Determine color based on percentage
@@ -236,8 +261,8 @@ colorClass = 'bg-red-500'; // Target exceeded
 progressBarEl.style.width = `${percentage}%`;
 progressBarEl.className = `${colorClass} h-3 rounded-full transition-all duration-500 ease-out`;
 
-if (currentCarbs > dailyTarget) {
-progressTextEl.textContent = `OVER by ${currentCarbs - dailyTarget}g!`;
+if (currentTotalCarbs > dailyTarget) {
+progressTextEl.textContent = `OVER by ${currentTotalCarbs - dailyTarget}g!`;
 progressTextEl.classList.add('text-red-300');
 progressTextEl.classList.remove('text-white');
 } else {
@@ -248,27 +273,39 @@ progressTextEl.classList.add('text-white');
 }
 
 
-/** Core function to update carbs in Firestore for the selected date */
+/** Core function to update carbs in Firestore for the selected date and meal */
 async function updateCarbs(grams) {
 if (!userId || !db) return;
 
 const carbDocRef = getCarbsDocRef(db, userId, selectedDate);
+const mealField = selectedMeal;
 
 try {
-// Get current value to calculate new total
+// Get current value to calculate new total for the specific meal
 const docSnap = await getDoc(carbDocRef);
-let currentCarbs = 0;
+let existingCarbs = {}; // The meal breakdown for the day
 
 if (docSnap.exists()) {
-currentCarbs = docSnap.data().totalCarbs || 0;
+// Retrieve all meal data
+existingCarbs = docSnap.data().dailyCarbs || {};
 }
 
-const newCarbs = Math.max(0, currentCarbs + grams); // Ensure it doesn't go below zero
+// Get the current meal total, default to 0
+const currentMealCarbs = existingCarbs[mealField] || 0;
+
+// Calculate the new meal total, ensuring it doesn't go below zero
+const newMealCarbs = Math.max(0, currentMealCarbs + grams);
+
+// Prepare the update object using dot notation for the nested field
 const updateData = {
-totalCarbs: newCarbs,
-lastUpdated: new Date().toISOString()
+    dailyCarbs: { 
+        ...existingCarbs, // Keep all other meal data
+        [mealField]: newMealCarbs // Update only the current meal
+    },
+    lastUpdated: new Date().toISOString()
 };
 
+// Use merge: true to avoid overwriting the entire document
 await setDoc(carbDocRef, updateData, { merge: true });
 // UI update via onSnapshot listener
 
@@ -296,12 +333,14 @@ console.log(`Subscribing to listener for date: ${dateToListen}`);
 unsubscribeSnapshot = onSnapshot(carbDocRef, (docSnap) => {
 if (docSnap.exists()) {
 const data = docSnap.data();
-const total = data.totalCarbs || 0;
+currentDayCarbs = data.dailyCarbs || {}; // Update the global meal breakdown
+const total = calculateTotalCarbs(currentDayCarbs);
 totalCarbsEl.textContent = total;
 updateProgressDisplay(total);
 console.log(`Carbs updated in UI for ${dateToListen}: ${total}`);
 } else {
 // Document doesn't exist, reset UI to 0
+currentDayCarbs = {};
 totalCarbsEl.textContent = 0;
 updateProgressDisplay(0);
 console.log(`No carb data for ${dateToListen}.`);
@@ -311,8 +350,15 @@ console.error("Firestore Listener Error:", error);
 });
 }
 
+/** Helper function to calculate total carbs from the meal breakdown object */
+function calculateTotalCarbs(mealCarbs) {
+    return Object.values(mealCarbs).reduce((sum, current) => sum + (current || 0), 0);
+}
+
+
 /** Function to handle saving the target to Firestore */
 async function saveTarget(newTarget) {
+// ... (existing saveTarget logic, no change)
 if (!userId || !db) return;
 const settingsDocRef = getSettingsDocRef(db, userId);
 try {
@@ -326,6 +372,7 @@ showMessage(`Could not save target: ${error.message}`, true);
 
 /** Setup Real-time Listener for the user's daily target setting */
 function setupSettingsListener() {
+// ... (existing setupSettingsListener logic, no change)
 if (!db || !userId) return;
 
 const settingsDocRef = getSettingsDocRef(db, userId);
@@ -334,13 +381,9 @@ onSnapshot(settingsDocRef, (docSnap) => {
 if (docSnap.exists() && docSnap.data().dailyTarget !== undefined) {
 dailyTarget = docSnap.data().dailyTarget;
 } else {
-// Use default if no settings exist, and save it for future sync
 dailyTarget = 150;
-// Intentionally NOT calling saveTarget here to avoid unnecessary writes,
-// it will be saved when the user manually changes the input.
 }
 carbTargetInputEl.value = dailyTarget;
-// Recalculate progress after target update
 updateProgressDisplay(parseInt(totalCarbsEl.textContent) || 0);
 }, (error) => {
 console.error("Settings Listener Error:", error);
@@ -353,7 +396,8 @@ console.error("Settings Listener Error:", error);
 /** Generate the carb entry buttons with varying colors */
 function generateButtons() {
 const carbAmounts = [10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70];
-buttonsContainer.innerHTML = '';
+// Clear all except the -5g button
+buttonsContainer.querySelectorAll(':not(#minus-button)').forEach(btn => btn.remove());
 
 carbAmounts.forEach(grams => {
 let colorClass = 'bg-gray-500';
@@ -394,10 +438,30 @@ updateProgressDisplay(parseInt(totalCarbsEl.textContent) || 0);
 }
 }
 
+/** Handles meal tab click */
+function handleMealTabClick(event) {
+    const newMeal = event.target.dataset.meal;
+    if (newMeal && newMeal !== selectedMeal) {
+        // 1. Update active meal state
+        selectedMeal = newMeal;
+
+        // 2. Update UI tab styles
+        document.querySelectorAll('.meal-tab').forEach(tab => {
+            tab.classList.remove('active');
+            tab.classList.remove('border-indigo-600');
+        });
+        event.target.classList.add('active');
+        event.target.classList.add('border-indigo-600');
+
+        // Optional: Provide feedback on which meal is active
+        console.log(`Meal selected: ${selectedMeal}`);
+    }
+}
+
 /** Handle the Reset button click */
 resetButton.addEventListener('click', () => {
 // Confirmation modal setup
-showMessage(`Are you sure you want to reset the carbs for ${selectedDate} to 0?`, false);
+showMessage(`Are you sure you want to reset ALL carbs for ${selectedDate} to 0?`, false);
 
 const modalContent = messageText.parentNode;
 
@@ -414,9 +478,9 @@ confirmResetButton.className = 'temp-button mt-4 bg-red-500 hover:bg-red-600 tex
 confirmResetButton.onclick = async () => {
 hideMessage();
 try {
-// Set totalCarbs to 0 for the selected date
+// Set the entire dailyCarbs map to an empty object for the selected date
 const carbDocRef = getCarbsDocRef(db, userId, selectedDate);
-await setDoc(carbDocRef, { totalCarbs: 0, lastUpdated: new Date().toISOString() }, { merge: true });
+await setDoc(carbDocRef, { dailyCarbs: {}, lastUpdated: new Date().toISOString() }, { merge: true });
 
 showMessage(`Carbs for ${selectedDate} reset to 0.`, false);
 closeMessageButton.classList.remove('hidden');
@@ -433,10 +497,14 @@ modalContent.appendChild(confirmResetButton);
 closeMessageButton.classList.add('hidden');
 });
 
+
 // Set up event listeners
 dateSelectorEl.addEventListener('change', handleDateChange);
 carbTargetInputEl.addEventListener('change', handleTargetChange);
 closeMessageButton.addEventListener('click', hideMessage);
+
+// Event listener for all meal tabs
+mealTabsContainer.addEventListener('click', handleMealTabClick);
 
 // --- App Start ---
 generateButtons();
