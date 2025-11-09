@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Daily Carb Counter</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+body {
+font-family: 'Inter', sans-serif;
+background-color: #f3f4f6; /* Light gray background */
+}
+.carb-button {
+transition: transform 0.1s, box-shadow 0.1s;
+}
+.carb-button:active {
+transform: translateY(1px);
+box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+input[type="date"], input[type="number"] {
+border: 2px solid #cbd5e1;
+padding: 8px 12px;
+border-radius: 8px;
+font-size: 1rem;
+font-weight: 600;
+color: #1f2937;
+background-color: #f9fafb;
+transition: border-color 0.15s;
+}
+input[type="date"]:focus, input[type="number"]:focus {
+outline: none;
+border-color: #3b82f6;
+box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.5);
+}
+</style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+<div class="w-full max-w-lg bg-white rounded-xl shadow-2xl p-6 md:p-8">
+<!-- Header -->
+<header class="text-center mb-6">
+<h1 class="text-3xl font-extrabold text-gray-800">Carb Intake Tracker</h1>
+</header>
+
+<!-- Tracking Date Selector -->
+<div class="mb-4 flex flex-col sm:flex-row items-center justify-center space-y-2 sm:space-y-0 sm:space-x-4">
+<label for="date-selector" class="text-md font-bold text-gray-700 whitespace-nowrap">Tracking Date:</label>
+<input type="date" id="date-selector" class="w-full sm:w-auto text-center" />
+</div>
+
+<!-- Target Input Field -->
+<div class="mb-6 flex items-center justify-between bg-gray-100 p-3 rounded-xl shadow-inner">
+<label for="daily-target-input" class="text-md font-bold text-gray-700">Daily Target (g):</label>
+<input type="number" id="daily-target-input" value="150" min="0" class="w-24 text-center p-1 border-2 border-indigo-300 rounded-lg font-semibold" />
+</div>
+
+<!-- Display Area -->
+<div class="bg-indigo-600 p-6 rounded-xl shadow-lg mb-8 text-center">
+<p class="text-indigo-200 text-lg font-semibold uppercase tracking-wider">Carbs for Selected Day</p>
+<div class="flex justify-center items-end mt-2">
+<p id="total-carbs" class="text-6xl font-black text-white leading-none">0</p>
+<span class="text-2xl font-bold text-indigo-200 ml-2">g</span>
+</div>
+
+<!-- Progress Bar -->
+<div class="mt-4 pt-4 border-t border-indigo-500">
+<p class="text-indigo-200 text-sm font-semibold">Progress Towards Target (<span id="target-display">0</span>g)</p>
+<div class="w-full bg-indigo-500 rounded-full h-3 mt-2">
+<div id="progress-bar" class="bg-emerald-400 h-3 rounded-full transition-all duration-500 ease-out" style="width: 0%;"></div>
+</div>
+<p id="progress-text" class="text-white text-sm mt-1 font-bold">0% Complete</p>
+</div>
+</div>
+
+<!-- Carb Entry Buttons -->
+<div class="mb-6">
+<h2 class="text-xl font-bold text-gray-800 mb-4">Quick Add (Grams)</h2>
+<div id="carb-buttons-container" class="grid grid-cols-5 gap-3">
+<!-- Buttons will be generated here -->
+</div>
+</div>
+
+<!-- Action Buttons -->
+<div class="flex flex-col md:flex-row justify-between items-center pt-4 border-t border-gray-100 mt-6 space-y-4 md:space-y-0">
+<button id="reset-button" class="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out w-full md:w-auto">
+Reset Selected Day
+</button>
+<p class="text-xs text-gray-400">User ID: <span id="user-id-display">Loading...</span></p>
+</div>
+
+<!-- Loading/Message Box -->
+<div id="status-message" class="fixed inset-0 bg-gray-900 bg-opacity-50 hidden items-center justify-center z-50">
+<div class="bg-white p-6 rounded-lg shadow-2xl w-80 text-center">
+<p id="message-text" class="text-gray-700 font-semibold">Loading...</p>
+<button id="close-message" class="mt-4 bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hidden">
+OK
+</button>
+</div>
+</div>
+</div>
+
+<!-- Firebase Imports -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+// Set Firebase Log Level
+setLogLevel('Debug');
+
+// --- Global Firebase & App Variables ---
+let db;
+let auth;
+let userId = 'loading';
+let unsubscribeSnapshot = null; // To hold the unsubscribe function for the date listener
+let dailyTarget = 150; // Default target
+let selectedDate = new Date().toISOString().slice(0, 10); // Default to today (YYYY-MM-DD)
+
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+
+// --- DOM Elements ---
+const totalCarbsEl = document.getElementById('total-carbs');
+const dateSelectorEl = document.getElementById('date-selector');
+const carbTargetInputEl = document.getElementById('daily-target-input');
+const targetDisplayEl = document.getElementById('target-display');
+const progressBarEl = document.getElementById('progress-bar');
+const progressTextEl = document.getElementById('progress-text');
+const userIdDisplayEl = document.getElementById('user-id-display');
+const buttonsContainer = document.getElementById('carb-buttons-container');
+const resetButton = document.getElementById('reset-button');
+const statusMessage = document.getElementById('status-message');
+const messageText = document.getElementById('message-text');
+const closeMessageButton = document.getElementById('close-message');
+
+// --- Utility Functions ---
+
+/** Displays a custom modal message (replaces alert()) */
+function showMessage(text, isError = false) {
+messageText.textContent = text;
+messageText.className = isError ? 'text-red-600 font-semibold' : 'text-gray-700 font-semibold';
+
+// Cleanup previous temporary buttons/styles
+const modalContent = messageText.parentNode;
+modalContent.querySelectorAll('.temp-button').forEach(btn => btn.remove());
+
+closeMessageButton.classList.toggle('hidden', isError); // Hide default OK on loading/error
+statusMessage.classList.remove('hidden');
+statusMessage.classList.add('flex');
+}
+
+/** Hides the custom modal message */
+function hideMessage() {
+statusMessage.classList.add('hidden');
+statusMessage.classList.remove('flex');
+}
+
+/** Get the Firestore path for the selected date's carbs document */
+function getCarbsDocRef(dbInstance, uid, dateString) {
+// Path: /artifacts/{appId}/users/{userId}/daily_carbs/{YYYY-MM-DD}
+const collectionPath = `/artifacts/${appId}/users/${uid}/daily_carbs`;
+return doc(dbInstance, collectionPath, dateString);
+}
+
+/** Get the Firestore path for the user's settings document */
+function getSettingsDocRef(dbInstance, uid) {
+// Path: /artifacts/{appId}/users/{userId}/settings/carb_target
+return doc(dbInstance, `/artifacts/${appId}/users/${uid}/settings`, 'carb_target');
+}
+
+/** Initialize the Firebase App and Auth */
+async function initializeAppAndAuth() {
+if (Object.keys(firebaseConfig).length === 0) {
+showMessage("Firebase configuration missing. Cannot connect to database.", true);
+return;
+}
+
+try {
+showMessage("Initializing application...");
+const app = initializeApp(firebaseConfig);
+db = getFirestore(app);
+auth = getAuth(app);
+
+// Set default date selector value to today
+dateSelectorEl.value = selectedDate;
+carbTargetInputEl.value = dailyTarget; // Initial value on load
+
+// Attempt to sign in with custom token or anonymously
+const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+if (token) {
+await signInWithCustomToken(auth, token);
+} else {
+await signInAnonymously(auth);
+}
+
+// Wait for auth state to settle
+onAuthStateChanged(auth, (user) => {
+if (user) {
+userId = user.uid;
+userIdDisplayEl.textContent = userId;
+setupRealtimeListener(selectedDate);
+setupSettingsListener(); // Load user's target
+hideMessage();
+} else {
+userId = 'anonymous';
+userIdDisplayEl.textContent = userId;
+showMessage("Authentication failed.", true);
+}
+});
+
+} catch (error) {
+console.error("Firebase Initialization Error:", error);
+showMessage(`Initialization failed. Error: ${error.message}`, true);
+}
+}
+
+/** Function to calculate and update progress bar UI */
+function updateProgressDisplay(currentCarbs) {
+targetDisplayEl.textContent = dailyTarget;
+
+let percentage = 0;
+let colorClass = 'bg-emerald-400';
+
+if (dailyTarget > 0) {
+percentage = Math.min(100, (currentCarbs / dailyTarget) * 100);
+}
+
+// Determine color based on percentage
+if (percentage < 75) {
+colorClass = 'bg-emerald-400';
+} else if (percentage < 100) {
+colorClass = 'bg-yellow-400';
+} else {
+colorClass = 'bg-red-500'; // Target exceeded
+}
+
+progressBarEl.style.width = `${percentage}%`;
+progressBarEl.className = `${colorClass} h-3 rounded-full transition-all duration-500 ease-out`;
+
+if (currentCarbs > dailyTarget) {
+progressTextEl.textContent = `OVER by ${currentCarbs - dailyTarget}g!`;
+progressTextEl.classList.add('text-red-300');
+progressTextEl.classList.remove('text-white');
+} else {
+progressTextEl.textContent = `${Math.round(percentage)}% Complete`;
+progressTextEl.classList.remove('text-red-300');
+progressTextEl.classList.add('text-white');
+}
+}
+
+
+/** Core function to update carbs in Firestore for the selected date */
+async function updateCarbs(grams) {
+if (!userId || !db) return;
+
+const carbDocRef = getCarbsDocRef(db, userId, selectedDate);
+
+try {
+// Get current value to calculate new total
+const docSnap = await getDoc(carbDocRef);
+let currentCarbs = 0;
+
+if (docSnap.exists()) {
+currentCarbs = docSnap.data().totalCarbs || 0;
+}
+
+const newCarbs = Math.max(0, currentCarbs + grams); // Ensure it doesn't go below zero
+const updateData = {
+totalCarbs: newCarbs,
+lastUpdated: new Date().toISOString()
+};
+
+await setDoc(carbDocRef, updateData, { merge: true });
+// UI update via onSnapshot listener
+
+} catch (error) {
+console.error("Error updating carbs:", error);
+showMessage(`Could not save entry: ${error.message}`, true);
+}
+}
+
+/** Setup Real-time Listener for the specific date's Carbs */
+function setupRealtimeListener(dateToListen) {
+if (!db || !userId) return;
+
+// 1. If an existing listener exists, unsubscribe from it
+if (unsubscribeSnapshot) {
+unsubscribeSnapshot();
+console.log(`Unsubscribed from listener for date: ${selectedDate}`);
+}
+
+// 2. Get the new document reference
+const carbDocRef = getCarbsDocRef(db, userId, dateToListen);
+console.log(`Subscribing to listener for date: ${dateToListen}`);
+
+// 3. Set up the new listener and save the unsubscribe function
+unsubscribeSnapshot = onSnapshot(carbDocRef, (docSnap) => {
+if (docSnap.exists()) {
+const data = docSnap.data();
+const total = data.totalCarbs || 0;
+totalCarbsEl.textContent = total;
+updateProgressDisplay(total);
+console.log(`Carbs updated in UI for ${dateToListen}: ${total}`);
+} else {
+// Document doesn't exist, reset UI to 0
+totalCarbsEl.textContent = 0;
+updateProgressDisplay(0);
+console.log(`No carb data for ${dateToListen}.`);
+}
+}, (error) => {
+console.error("Firestore Listener Error:", error);
+});
+}
+
+/** Function to handle saving the target to Firestore */
+async function saveTarget(newTarget) {
+if (!userId || !db) return;
+const settingsDocRef = getSettingsDocRef(db, userId);
+try {
+await setDoc(settingsDocRef, { dailyTarget: newTarget, lastUpdated: new Date().toISOString() }, { merge: true });
+console.log("Target saved:", newTarget);
+} catch (error) {
+console.error("Error saving target:", error);
+showMessage(`Could not save target: ${error.message}`, true);
+}
+}
+
+/** Setup Real-time Listener for the user's daily target setting */
+function setupSettingsListener() {
+if (!db || !userId) return;
+
+const settingsDocRef = getSettingsDocRef(db, userId);
+
+onSnapshot(settingsDocRef, (docSnap) => {
+if (docSnap.exists() && docSnap.data().dailyTarget !== undefined) {
+dailyTarget = docSnap.data().dailyTarget;
+} else {
+// Use default if no settings exist, and save it for future sync
+dailyTarget = 150;
+saveTarget(dailyTarget);
+}
+carbTargetInputEl.value = dailyTarget;
+// Recalculate progress after target update
+updateProgressDisplay(parseInt(totalCarbsEl.textContent) || 0);
+}, (error) => {
+console.error("Settings Listener Error:", error);
+});
+}
+
+
+// --- UI & Event Handlers ---
+
+/** Generate the carb entry buttons with varying colors */
+function generateButtons() {
+const carbAmounts = [10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70];
+buttonsContainer.innerHTML = ''; // Clear existing buttons
+
+carbAmounts.forEach(grams => {
+let colorClass = 'bg-gray-500'; // Default safety
+
+if (grams <= 25) {
+// Low amounts: Cyan/Blue
+colorClass = 'bg-cyan-500 hover:bg-cyan-600';
+} else if (grams <= 50) {
+// Medium amounts: Emerald/Green
+colorClass = 'bg-emerald-500 hover:bg-emerald-600';
+} else {
+// High amounts: Amber/Orange
+colorClass = 'bg-amber-500 hover:bg-amber-600';
+}
+
+const button = document.createElement('button');
+button.textContent = `+${grams}g`;
+button.className = `carb-button ${colorClass} text-white font-extrabold py-4 rounded-xl shadow-md transition duration-150 ease-in-out text-lg`;
+button.onclick = () => updateCarbs(grams);
+buttonsContainer.appendChild(button);
+});
+}
+
+/** Handles change event on the date selector */
+function handleDateChange(event) {
+const newDate = event.target.value;
+if (newDate) {
+selectedDate = newDate;
+setupRealtimeListener(selectedDate);
+totalCarbsEl.textContent = '...'; // Show loading state
+}
+}
+
+/** Handles change event on the target input */
+function handleTargetChange(event) {
+const newTarget = parseInt(event.target.value);
+if (!isNaN(newTarget) && newTarget >= 0) {
+dailyTarget = newTarget;
+saveTarget(dailyTarget);
+updateProgressDisplay(parseInt(totalCarbsEl.textContent) || 0);
+}
+}
+
+/** Handle the Reset button click */
+resetButton.addEventListener('click', () => {
+// Confirmation modal setup
+showMessage(`Are you sure you want to reset the carbs for ${selectedDate} to 0?`, false);
+
+const modalContent = messageText.parentNode;
+
+// Add new Cancel button (styled as primary/blue)
+const cancelButton = document.createElement('button');
+cancelButton.textContent = 'Cancel';
+cancelButton.className = 'temp-button mt-4 bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg';
+cancelButton.onclick = hideMessage;
+
+// Add new Confirm button (styled as danger/red)
+const confirmResetButton = document.createElement('button');
+confirmResetButton.textContent = 'Yes, Reset';
+confirmResetButton.className = 'temp-button mt-4 bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg ml-3';
+confirmResetButton.onclick = async () => {
+hideMessage();
+try {
+// Set totalCarbs to 0 for the selected date
+const carbDocRef = getCarbsDocRef(db, userId, selectedDate);
+await setDoc(carbDocRef, { totalCarbs: 0, lastUpdated: new Date().toISOString() }, { merge: true });
+
+showMessage(`Carbs for ${selectedDate} reset to 0.`, false);
+closeMessageButton.classList.remove('hidden'); // Show OK for status message
+
+} catch (e) {
+showMessage(`Reset failed: ${e.message}`, true);
+closeMessageButton.classList.remove('hidden');
+}
+};
+
+// Append the temporary buttons
+modalContent.appendChild(cancelButton);
+modalContent.appendChild(confirmResetButton);
+closeMessageButton.classList.add('hidden');
+});
+
+// Set up event listeners
+dateSelectorEl.addEventListener('change', handleDateChange);
+carbTargetInputEl.addEventListener('change', handleTargetChange);
+closeMessageButton.addEventListener('click', hideMessage);
+
+// --- App Start ---
+generateButtons();
+initializeAppAndAuth();
+</script>
+</body>
+</html>
