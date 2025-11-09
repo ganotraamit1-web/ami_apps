@@ -115,12 +115,9 @@ const firebaseConfig = {
     measurementId: "G-23WSR8PR9H"
 };
 
-// Initialize Firebase
+// Initialize Firebase App globally once
 const app = initializeApp(firebaseConfig);
-const analytics = getAnalytics(app); // Analytics is initialized but not used in the logic
-
-// This is used for the Firestore path: /artifacts/{appId}/users/{userId}/...
-// Note: We'll use firebaseConfig.projectId as a stable ID for the collection path below.
+const analytics = getAnalytics(app); 
 
 // ====================================================================================
 
@@ -171,7 +168,6 @@ statusMessage.classList.remove('flex');
 /** Get the Firestore path for the selected date's carbs document */
 function getCarbsDocRef(dbInstance, uid, dateString) {
 // Path: /artifacts/{projectId}/users/{userId}/daily_carbs/{YYYY-MM-DD}
-// Using projectId as the first path segment for a stable collection path
 const collectionPath = `/artifacts/${firebaseConfig.projectId}/users/${uid}/daily_carbs`;
 return doc(dbInstance, collectionPath, dateString);
 }
@@ -184,16 +180,12 @@ return doc(dbInstance, `/artifacts/${firebaseConfig.projectId}/users/${uid}/sett
 
 /** Initialize the Firebase App and Auth */
 async function initializeAppAndAuth() {
-// Note: The check for placeholder configuration has been removed since the config is now provided.
-
 try {
 showMessage("Initializing application...");
+    
+// CORRECTION: Use the globally initialized 'app' instance to get services
 db = getFirestore(app);
-auth = getAuth(app);
-
-// Set default date selector value to today
-dateSelectorEl.value = selectedDate;
-carbTargetInputEl.value = dailyTarget; // Initial value on load
+auth = getAuth(app); 
 
 // *** START EXTERNAL HOSTING AUTHENTICATION LOGIC ***
 // We always use Anonymous Sign-In when running on external hosts.
